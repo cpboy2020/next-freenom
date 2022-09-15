@@ -11,6 +11,7 @@
 namespace Luolongfei\App\Console;
 
 use Luolongfei\App\Exceptions\LlfException;
+use Luolongfei\App\Exceptions\WarningException;
 use GuzzleHttp\Client;
 use GuzzleHttp\Cookie\CookieJar;
 use Luolongfei\Libs\Log;
@@ -18,7 +19,7 @@ use Luolongfei\Libs\Message;
 
 class FreeNom extends Base
 {
-    const VERSION = 'v0.4.3';
+    const VERSION = 'v0.5.1';
 
     const TIMEOUT = 33;
 
@@ -39,6 +40,9 @@ class FreeNom extends Base
 
     // 匹配登录状态的正则
     const LOGIN_STATUS_REGEX = '/<li.*?Logout.*?<\/li>/i';
+
+    // 匹配无域名的正则
+    const NO_DOMAIN_REGEX = '/<tr\sclass="carttablerow"><td\scolspan="5">(?P<msg>[^<]+)<\/td><\/tr>/i';
 
     /**
      * @var Client
@@ -83,7 +87,7 @@ class FreeNom extends Base
             'headers' => [
                 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
                 'Accept-Encoding' => 'gzip, deflate, br',
-                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36',
+                'User-Agent' => sprintf('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36', get_random_user_agent()),
             ],
             'timeout' => self::TIMEOUT,
             CURLOPT_FOLLOWLOCATION => true,
@@ -93,7 +97,7 @@ class FreeNom extends Base
             'proxy' => config('freenom_proxy'),
         ]);
 
-        system_log(sprintf('当前程序版本 %s', self::VERSION));
+        system_log(sprintf(lang('100038'), self::VERSION));
     }
 
     private function __clone()
@@ -128,7 +132,7 @@ class FreeNom extends Base
         }
 
         if (empty($this->jar->getCookieByName('WHMCSZH5eHTGhfvzP')->getValue())) {
-            throw new LlfException(34520002, lang('error_msg.100001'));
+            throw new LlfException(34520002, lang('100001'));
         }
 
         return true;
@@ -141,9 +145,14 @@ class FreeNom extends Base
      *
      * @return array
      * @throws LlfException
+     * @throws WarningException
      */
     protected function getAllDomains(string $domainStatusPage)
     {
+        if (preg_match(self::NO_DOMAIN_REGEX, $domainStatusPage, $m)) {
+            throw new WarningException(34520014, [$this->username, $m['msg']]);
+        }
+
         if (!preg_match_all(self::DOMAIN_INFO_REGEX, $domainStatusPage, $allDomains, PREG_SET_ORDER)) {
             throw new LlfException(34520003);
         }
@@ -244,16 +253,16 @@ class FreeNom extends Base
                 'renewalFailuresArr' => $renewalFailuresArr,
                 'domainStatusArr' => $domainStatusArr,
             ];
-            $result = Message::send('', '主人，我刚刚帮你续期域名啦~', 2, $data);
+            $result = Message::send('', lang('100039'), 2, $data);
 
             system_log(sprintf(
-                '恭喜，成功续期 <green>%d</green> 个域名，失败 <green>%d</green> 个域名。%s',
+                lang('100040'),
                 count($renewalSuccessArr),
                 count($renewalFailuresArr),
-                $result ? '详细的续期结果已送信成功，请注意查收。' : ''
+                $result ? lang('100041') : ''
             ));
 
-            Log::info(sprintf("账户：%s\n续期结果如下：\n", $this->username), $data);
+            Log::info(sprintf(lang('100042'), $this->username), $data);
 
             return true;
         }
@@ -264,12 +273,12 @@ class FreeNom extends Base
                 'username' => $this->username,
                 'domainStatusArr' => $domainStatusArr,
             ];
-            Message::send('', '报告，今天没有域名需要续期', 3, $data);
+            Message::send('', lang('100043'), 3, $data);
         } else {
-            system_log('当前通知频率为「仅当有续期操作时」，故本次不会推送通知');
+            system_log(lang('100044'));
         }
 
-        system_log(sprintf('%s：<green>执行成功，今次没有需要续期的域名。</green>', $this->username));
+        system_log(sprintf(lang('100045'), $this->username));
 
         return true;
     }
@@ -303,7 +312,7 @@ class FreeNom extends Base
 
             return stripos($resp, 'Order Confirmation') !== false;
         } catch (\Exception $e) {
-            $errorMsg = sprintf('续期请求出错：%s，域名 ID：%s（账户：%s）', $e->getMessage(), $id, $this->username);
+            $errorMsg = sprintf(lang('100046'), $e->getMessage(), $id, $this->username);
             system_log($errorMsg);
             Message::send($errorMsg);
 
@@ -393,12 +402,12 @@ class FreeNom extends Base
     private function sendExceptionReport($e)
     {
         Message::send(sprintf(
-            '具体是在%s文件的第%d行，抛出了一个异常。异常的内容是%s，快去看看吧。（账户：%s）',
+            lang('100047'),
             $e->getFile(),
             $e->getLine(),
             $e->getMessage(),
             $this->username
-        ), '主人，出错了，' . $e->getMessage());
+        ), lang('100048') . $e->getMessage());
     }
 
     /**
@@ -408,13 +417,17 @@ class FreeNom extends Base
     public function handle()
     {
         $accounts = $this->getAccounts();
+        $totalAccounts = count($accounts);
 
-        system_log(sprintf('共发现 <green>%d</green> 个 freenom 账户，处理中', count($accounts)));
+        system_log(sprintf(lang('100049'), $totalAccounts));
 
-        foreach ($accounts as $account) {
+        foreach ($accounts as $index => $account) {
             try {
                 $this->username = $account['username'];
                 $this->password = $account['password'];
+
+                $num = $index + 1;
+                system_log(sprintf(lang('100050'), get_local_num($num), $this->username, $num, $totalAccounts));
 
                 $this->jar = new CookieJar(); // 所有请求共用一个 CookieJar 实例
                 $this->login($this->username, $this->password);
@@ -424,11 +437,13 @@ class FreeNom extends Base
                 $token = $this->getToken($domainStatusPage);
 
                 $this->renewAllDomains($allDomains, $token);
+            } catch (WarningException $e) {
+                system_log(sprintf(lang('100129'), $e->getMessage()));
             } catch (LlfException $e) {
-                system_log(sprintf('出错：<red>%s</red>', $e->getMessage()));
+                system_log(sprintf(lang('100051'), $e->getMessage()));
                 $this->sendExceptionReport($e);
             } catch (\Exception $e) {
-                system_log(sprintf('出错：<red>%s</red>', $e->getMessage()), $e->getTrace());
+                system_log(sprintf(lang('100052'), $e->getMessage()), $e->getTrace());
                 $this->sendExceptionReport($e);
             }
         }

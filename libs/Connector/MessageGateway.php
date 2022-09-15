@@ -35,7 +35,7 @@ abstract class MessageGateway implements MessageServiceInterface
     public function check(string $content, array $data)
     {
         if ($content === '' && empty($data)) {
-            throw new \Exception(lang('error_msg.100002'));
+            throw new \Exception(lang('100002'));
         }
     }
 
@@ -49,5 +49,27 @@ abstract class MessageGateway implements MessageServiceInterface
     public function newLine2Br(string $content)
     {
         return preg_replace("/\n/u", '<br>', $content);
+    }
+
+    /**
+     * 设置公共页脚
+     *
+     * @param $footer
+     * @param $newline
+     * @param $enablePushFreqTips
+     *
+     * @return void
+     */
+    public function setCommonFooter(&$footer, $newline = "\n", $enablePushFreqTips = true)
+    {
+        if ($enablePushFreqTips) {
+            $footer .= $newline . $newline . lang('100133');
+        }
+
+        // 服务器信息相关文言
+        if (env('SHOW_SERVER_INFO')) {
+            $footer .= $newline . $newline . lang('100134');
+            $footer .= $newline . get_ip_info();
+        }
     }
 }

@@ -28,6 +28,11 @@ class TelegramBot extends MessageGateway
     protected $token;
 
     /**
+     * @var string Telegram 主机地址
+     */
+    protected $host;
+
+    /**
      * @var Client
      */
     protected $client;
@@ -36,6 +41,7 @@ class TelegramBot extends MessageGateway
     {
         $this->chatID = config('message.telegram.chat_id');
         $this->token = config('message.telegram.token');
+        $this->host = $this->getTelegramHost();
 
         $this->client = new Client([
             'headers' => [
@@ -45,8 +51,24 @@ class TelegramBot extends MessageGateway
             'timeout' => self::TIMEOUT,
             'verify' => config('verify_ssl'),
             'debug' => config('debug'),
-            'proxy' => config('message.telegram.proxy') ?: null,
+            'proxy' => config('message.telegram.proxy'),
         ]);
+    }
+
+    /**
+     * 获取 Telegram 主机地址
+     *
+     * @return string
+     */
+    private function getTelegramHost()
+    {
+        $host = (string)config('message.telegram.host');
+
+        if (preg_match('/^(?:https?:\/\/)?(?P<host>[^\/?\n]+)/iu', $host, $m)) {
+            return $m['host'];
+        }
+
+        return 'api.telegram.org';
     }
 
     /**
@@ -59,7 +81,7 @@ class TelegramBot extends MessageGateway
      */
     public function genDomainStatusFullMarkDownText(string $username, array $domainStatus)
     {
-        $markDownText = sprintf("我刚刚帮小主看了一下，账户 [%s](#) 今天并没有需要续期的域名。所有域名情况如下：\n\n", $username);
+        $markDownText = sprintf(lang('100102'), $username);
 
         $markDownText .= $this->genDomainStatusMarkDownText($domainStatus);
 
@@ -77,8 +99,7 @@ class TelegramBot extends MessageGateway
     {
         $footer = '';
 
-        $footer .= "\n更多信息可以参考 [Freenom官网](https://my.freenom.com/domains.php?a=renewals) 哦~";
-        $footer .= "\n\n（如果你不想每次执行都收到推送，请将 .env 中 NOTICE_FREQ 的值设为 0，使程序只在有续期操作时才推送）";
+        $footer .= lang('100103');
 
         return $footer;
     }
@@ -93,16 +114,16 @@ class TelegramBot extends MessageGateway
     public function genDomainStatusMarkDownText(array $domainStatus)
     {
         if (empty($domainStatus)) {
-            return "无数据。\n";
+            return lang('100105');
         }
 
         $domainStatusMarkDownText = '';
 
         foreach ($domainStatus as $domain => $daysLeft) {
-            $domainStatusMarkDownText .= sprintf('[%s](http://%s) 还有 *%d* 天到期，', $domain, $domain, $daysLeft);
+            $domainStatusMarkDownText .= sprintf(lang('100106'), $domain, $domain, $daysLeft);
         }
 
-        $domainStatusMarkDownText = rtrim($domainStatusMarkDownText, '，') . "。\n";
+        $domainStatusMarkDownText = rtrim(rtrim($domainStatusMarkDownText, ' '), "，,\n") . lang('100107');
 
         return $domainStatusMarkDownText;
     }
@@ -119,19 +140,19 @@ class TelegramBot extends MessageGateway
      */
     public function genDomainRenewalResultsMarkDownText(string $username, array $renewalSuccessArr, array $renewalFailuresArr, array $domainStatus)
     {
-        $text = sprintf("账户 [%s](#) 这次续期的结果如下\n\n", $username);
+        $text = sprintf(lang('100108'), $username);
 
         if ($renewalSuccessArr) {
-            $text .= '续期成功：';
+            $text .= lang('100109');
             $text .= $this->genDomainsMarkDownText($renewalSuccessArr);
         }
 
         if ($renewalFailuresArr) {
-            $text .= '续期出错：';
+            $text .= lang('100110');
             $text .= $this->genDomainsMarkDownText($renewalFailuresArr);
         }
 
-        $text .= "\n今次无需续期的域名及其剩余天数如下所示：\n\n";
+        $text .= lang('100111');
         $text .= $this->genDomainStatusMarkDownText($domainStatus);
 
         $text .= $this->getMarkDownFooter();
@@ -200,7 +221,7 @@ class TelegramBot extends MessageGateway
      * 应转义后传入，官方说明如下：
      * In all other places characters '_‘, ’*‘, ’[‘, ’]‘, ’(‘, ’)‘, ’~‘, ’`‘, ’>‘, ’#‘, ’+‘, ’-‘, ’=‘, ’|‘,
      * ’{‘, ’}‘, ’.‘, ’!‘ must be escaped with the preceding character ’\'.
-     * 如果你不转义，且恰好又不是正确的markdown语法，那 Telegram Bot 就只有报错了您勒
+     * 如果不转义则电报返回 400 错误
      *
      * 官方markdown语法示例：
      * *bold \*text*
@@ -231,15 +252,21 @@ class TelegramBot extends MessageGateway
     {
         $this->check($content, $data);
 
+        $commonFooter = '';
+
         if ($type === 1 || $type === 4) {
-            // Do nothing
+            $this->setCommonFooter($commonFooter, "\n", false);
         } else if ($type === 2) {
+            $this->setCommonFooter($commonFooter, "\n", false);
             $content = $this->genDomainRenewalResultsMarkDownText($data['username'], $data['renewalSuccessArr'], $data['renewalFailuresArr'], $data['domainStatusArr']);
         } else if ($type === 3) {
+            $this->setCommonFooter($commonFooter);
             $content = $this->genDomainStatusFullMarkDownText($data['username'], $data['domainStatusArr']);
         } else {
-            throw new \Exception(lang('error_msg.100003'));
+            throw new \Exception(lang('100003'));
         }
+
+        $content .= $commonFooter;
 
         $isMarkdown = true;
 
@@ -254,7 +281,7 @@ class TelegramBot extends MessageGateway
 
         if ($isMarkdown) {
             // 这几个比较容易在正常文本里出现，而我不想每次都手动转义传入，所以直接干掉了
-            $content = preg_replace('/([.>~_-])/u', '\\\\$1', $content);
+            $content = preg_replace('/([.>~_{}|`!+=#-])/u', '\\\\$1', $content);
 
             // 转义非链接格式的 [] 以及 ()
             $content = preg_replace_callback_array(
@@ -272,11 +299,11 @@ class TelegramBot extends MessageGateway
 
         try {
             $resp = $this->client->post(
-                sprintf('https://api.telegram.org/bot%s/sendMessage', $this->token),
+                sprintf('https://%s/bot%s/sendMessage', $this->host, $this->token),
                 [
                     'form_params' => [
-                        'chat_id' => $recipient ? $recipient : $this->chatID,
-                        'text' => $content,
+                        'chat_id' => $recipient ?: $this->chatID,
+                        'text' => $content, // Text of the message to be sent, 1-4096 characters after entities parsing
                         'parse_mode' => $isMarkdown ? 'MarkdownV2' : 'HTML',
                         'disable_web_page_preview' => true,
                         'disable_notification' => false
@@ -288,7 +315,7 @@ class TelegramBot extends MessageGateway
 
             return $resp['ok'] ?? false;
         } catch (\Exception $e) {
-            system_log('Telegram 消息发送失败：<red>' . $e->getMessage() . '</red>');
+            system_log(sprintf(lang('100112'), $e->getMessage()));
 
             return false;
         }
