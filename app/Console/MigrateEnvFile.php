@@ -173,6 +173,11 @@ class MigrateEnvFile extends Base
     public function migrateData(array $allEnvVars)
     {
         foreach ($allEnvVars as $envKey => $envVal) {
+            // 强行覆盖原有的最大请求重试次数
+            if ($envKey === 'MAX_REQUEST_RETRY_COUNT') {
+                continue;
+            }
+
             if ($this->setEnv($envKey, $envVal)) {
                 $this->migrateNum++;
             }
@@ -210,7 +215,17 @@ class MigrateEnvFile extends Base
      */
     public function formatEnvVal($key, $value)
     {
-        return sprintf(is_numeric($value) ? '%s=%s' : "%s='%s'", $key, $value);
+        if (is_numeric($value)) {
+            return sprintf('%s=%s', $key, $value);
+        }
+
+        $value = str_replace(
+            ["\\", "'", "\r", "\n"],
+            ["\\\\", "\\'", '\r', '\n'],
+            (string)$value
+        );
+
+        return sprintf("%s='%s'", $key, $value);
     }
 
     /**
@@ -224,6 +239,9 @@ class MigrateEnvFile extends Base
     protected function writeFile(string $path, string $contents): bool
     {
         $file = fopen($path, 'w');
+        if ($file === false) {
+            return false;
+        }
         fwrite($file, $contents);
 
         return fclose($file);

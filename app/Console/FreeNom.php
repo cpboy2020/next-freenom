@@ -16,10 +16,11 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Cookie\CookieJar;
 use Luolongfei\Libs\Log;
 use Luolongfei\Libs\Message;
+use GuzzleHttp\Cookie\SetCookie;
 
 class FreeNom extends Base
 {
-    const VERSION = 'v0.5.1';
+    const VERSION = 'v0.6.2';
 
     const TIMEOUT = 33;
 
@@ -70,6 +71,11 @@ class FreeNom extends Base
     private static $instance;
 
     /**
+     * @var int 最大请求重试次数
+     */
+    public $maxRequestRetryCount;
+
+    /**
      * @return FreeNom
      */
     public static function getInstance()
@@ -87,7 +93,7 @@ class FreeNom extends Base
             'headers' => [
                 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
                 'Accept-Encoding' => 'gzip, deflate, br',
-                'User-Agent' => sprintf('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36', get_random_user_agent()),
+                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             ],
             'timeout' => self::TIMEOUT,
             CURLOPT_FOLLOWLOCATION => true,
@@ -96,6 +102,8 @@ class FreeNom extends Base
             'debug' => config('debug'),
             'proxy' => config('freenom_proxy'),
         ]);
+
+        $this->maxRequestRetryCount = config('max_request_retry_count');
 
         system_log(sprintf(lang('100038'), self::VERSION));
     }
@@ -116,24 +124,29 @@ class FreeNom extends Base
     protected function login(string $username, string $password)
     {
         try {
-            $this->client->post(self::LOGIN_URL, [
-                'headers' => [
-                    'Content-Type' => 'application/x-www-form-urlencoded',
-                    'Referer' => 'https://my.freenom.com/clientarea.php'
-                ],
-                'form_params' => [
-                    'username' => $username,
-                    'password' => $password
-                ],
-                'cookies' => $this->jar
-            ]);
+            autoRetry(function ($username, $password, &$jar) {
+                return $this->client->post(self::LOGIN_URL, [
+                    'headers' => [
+                        'Content-Type' => 'application/x-www-form-urlencoded',
+                        'Referer' => 'https://my.freenom.com/clientarea.php'
+                    ],
+                    'form_params' => [
+                        'username' => $username,
+                        'password' => $password
+                    ],
+                    'cookies' => $jar
+                ]);
+            }, $this->maxRequestRetryCount, [$username, $password, &$this->jar]);
         } catch (\Exception $e) {
             throw new LlfException(34520002, $e->getMessage());
         }
 
-        if (empty($this->jar->getCookieByName('WHMCSZH5eHTGhfvzP')->getValue())) {
+        $loginCookie = $this->jar->getCookieByName('WHMCSZH5eHTGhfvzP');
+        if (!$loginCookie instanceof SetCookie || $loginCookie->getValue() === '') {
             throw new LlfException(34520002, lang('100001'));
         }
+
+        system_log(sprintf(lang('100138'), $username));
 
         return true;
     }
@@ -188,12 +201,14 @@ class FreeNom extends Base
     protected function getDomainStatusPage()
     {
         try {
-            $resp = $this->client->get(self::DOMAIN_STATUS_URL, [
-                'headers' => [
-                    'Referer' => 'https://my.freenom.com/clientarea.php'
-                ],
-                'cookies' => $this->jar
-            ]);
+            $resp = autoRetry(function (&$jar) {
+                return $this->client->get(self::DOMAIN_STATUS_URL, [
+                    'headers' => [
+                        'Referer' => 'https://my.freenom.com/clientarea.php'
+                    ],
+                    'cookies' => $jar
+                ]);
+            }, $this->maxRequestRetryCount, [&$this->jar]);
 
             $page = (string)$resp->getBody();
         } catch (\Exception $e) {
@@ -294,19 +309,21 @@ class FreeNom extends Base
     protected function renew(int $id, string $token)
     {
         try {
-            $resp = $this->client->post(self::RENEW_DOMAIN_URL, [
-                'headers' => [
-                    'Referer' => sprintf('https://my.freenom.com/domains.php?a=renewdomain&domain=%s', $id),
-                    'Content-Type' => 'application/x-www-form-urlencoded'
-                ],
-                'form_params' => [
-                    'token' => $token,
-                    'renewalid' => $id,
-                    sprintf('renewalperiod[%s]', $id) => '12M', // 续期一年
-                    'paymentmethod' => 'credit', // 支付方式：信用卡
-                ],
-                'cookies' => $this->jar
-            ]);
+            $resp = autoRetry(function ($token, $id, &$jar) {
+                return $this->client->post(self::RENEW_DOMAIN_URL, [
+                    'headers' => [
+                        'Referer' => sprintf('https://my.freenom.com/domains.php?a=renewdomain&domain=%s', $id),
+                        'Content-Type' => 'application/x-www-form-urlencoded'
+                    ],
+                    'form_params' => [
+                        'token' => $token,
+                        'renewalid' => $id,
+                        sprintf('renewalperiod[%s]', $id) => '12M', // 续期一年
+                        'paymentmethod' => 'credit', // 支付方式：信用卡
+                    ],
+                    'cookies' => $jar
+                ]);
+            }, $this->maxRequestRetryCount, [$token, $id, &$this->jar]);
 
             $resp = (string)$resp->getBody();
 
@@ -340,10 +357,12 @@ class FreeNom extends Base
 
         $tmp = [];
         foreach ($array as $k => $items) {
-            $combinedKey = '';
+            $combinedValues = [];
             foreach ($keys as $key) {
-                $combinedKey .= $items[$key];
+                $combinedValues[$key] = $items[$key] ?? null;
             }
+
+            $combinedKey = json_encode($combinedValues, JSON_UNESCAPED_UNICODE);
 
             if (isset($tmp[$combinedKey])) {
                 unset($array[$k]);
@@ -397,7 +416,7 @@ class FreeNom extends Base
     /**
      * 发送异常报告
      *
-     * @param $e \Exception|LlfException
+     * @param \Throwable $e
      */
     private function sendExceptionReport($e)
     {
@@ -430,6 +449,14 @@ class FreeNom extends Base
                 system_log(sprintf(lang('100050'), get_local_num($num), $this->username, $num, $totalAccounts));
 
                 $this->jar = new CookieJar(); // 所有请求共用一个 CookieJar 实例
+
+                if (needAwsWafToken()) {
+                    $awsWafToken = getAwsWafToken();
+                    $this->jar->setCookie(buildAwsWafCookie($awsWafToken));
+                } else {
+                    system_log(lang('100140'));
+                }
+
                 $this->login($this->username, $this->password);
 
                 $domainStatusPage = $this->getDomainStatusPage();
@@ -442,7 +469,7 @@ class FreeNom extends Base
             } catch (LlfException $e) {
                 system_log(sprintf(lang('100051'), $e->getMessage()));
                 $this->sendExceptionReport($e);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 system_log(sprintf(lang('100052'), $e->getMessage()), $e->getTrace());
                 $this->sendExceptionReport($e);
             }
